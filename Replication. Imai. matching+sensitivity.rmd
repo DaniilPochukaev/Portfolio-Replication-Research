@@ -1,0 +1,448 @@
+---
+title: "Replication (Imai, 2005). + проверка на ненаблюдаемые конфаундеры "
+author: "Почукаев Даниил, Сосновская Яна, Морева Юлия"
+date: "23 04 2022"
+output: rmarkdown::github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Работа выполнена в учебных целях
+
+## Задача
+
+Мы реплицируем работу Косукэ Имаи с некоторыми своими дополнениями. 
+(Imai, K. (2005). Do get-out-the-vote calls reduce turnout? The importance of statistical methods for field experiments. American Political Science Review, 99(2), 283-300.)
+
+Ссылка на оригинальную работу: https://imai.fas.harvard.edu/research/files/matching.pdf
+Данные для анализа (GerberGreenImai) есть в пакете "Matching" ("JasjeetSekhon/Matching")
+Ссылка на пакет: https://github.com/JasjeetSekhon/Matching
+
+В работе Имаи критикует выводы, сделанные Гербером и Грином относительно эффекта телефонных звонков избирателям для их явки на выборы.
+Работа Гербера и Грина  (Gerber, A. S., & Green, D. P. (2000). The effects of canvassing, telephone calls, and direct mail on voter turnout: A field experiment. American political science review, 94(3), 653-663.)
+
+
+Мэтчинг - обработка данных с целью подобрать в них пары так, чтобы получить контрольную группу и группу воздействия с идентичными наблюдениями по всем ковариатам кроме интересующего нас воздействия. В данном кейсе мы хотим, вслед за Имаи, посмотреть есть ли причинно-следственная связь между звонками избирателям и их явкой на выборы.
+
+В конце работы мы проведем проверку мэтчинга посредством двух методов: плацебо-тесты и анализ чувствительности.
+### Описание данных:
+
+интересующие нас переменные: 
+
+- PERSONS = Количество человек в домохозяйстве
+
+- WARD = Район проживания
+
+- AGE = Возраст респондента
+
+- MAJORPTY = Демократ или республиканец
+
+- VOTED98 = Голосовал в 1998 году
+
+- PHN.C1 = Контакт произошел в phntrt1
+
+- NEW = Новый избиратель
+
+```{r message=F, warning=F, results= "hold"}
+pkgs_github <- "Matching"
+
+if (length(setdiff(pkgs_github, rownames(installed.packages()))) > 0) {
+  devtools::install_github("JasjeetSekhon/Matching")
+}
+library(MatchIt)
+library(sjPlot)
+library(ggplot2)
+library(cobalt)
+library(dplyr)
+library(rbounds)
+library(rgenoud)
+library(optmatch)
+library(sjPlot)
+library(cobalt)
+library(devtools)
+#devtools::install_github("Ngendahimana/SensitivityR5")
+library(SensitivityR5)
+```
+
+## Данные:
+
+```{r  message=F, warning=F}
+data(GerberGreenImai)
+head(GerberGreenImai)
+```
+
+```{r}
+str(GerberGreenImai)
+```
+
+Работа с данными:
+
+```{r}
+attach(GerberGreenImai)
+VOTE96.1 = as.factor(VOTE96.1)
+PHN.C1 = as.factor(PHN.C1)
+NEW = as.factor(NEW)
+VOTED98 = as.factor(VOTED98)
+MAJORPTY = as.factor(MAJORPTY)
+
+# для генетического мэтчинга через пакт Matching
+Y <- GerberGreenImai$VOTED98 
+Tr <- GerberGreenImai$PHN.C1 
+X <- cbind(AGE, PERSONS, VOTE96.1, NEW, MAJORPTY,  
+           WARD) 
+new.names <- c(AGE = "Age (Years)", 
+               PERSONS = "Number persons in household", 
+               " VOTE96.1" = "Voted in 1996", 
+               "NEW" = "New voter", 
+               "WARD" = "Ward of residence", 
+               "MAJORPTY" = "Democratic or Republican" ) 
+detach(GerberGreenImai)
+```
+
+
+
+
+## Мэтчинг
+
+Мэтчинг (Метод "ближайшего соседа")
+ 
+```{r  message=F, warning=F}
+#  по мере склонности 
+m.skl <- matchit(PHN.C1 ~ AGE  + PERSONS  + VOTE96.1 + NEW +  MAJORPTY + WARD,  
+                   data = GerberGreenImai, method = "nearest") 
+#  по Махаланобису
+
+m.mln <- matchit (PHN.C1 ~ AGE  + PERSONS  + VOTE96.1 + NEW +  MAJORPTY +  WARD,  
+                     data = GerberGreenImai, distance = "mahalanobis") 
+# Оптимальный полный мэтчинг 
+
+m.full  <- matchit(PHN.C1 ~ AGE  + PERSONS  + VOTE96.1 + NEW +  MAJORPTY + WARD, 
+data = GerberGreenImai, 
+method = "full") 
+
+## Подбор соответствий по стратам (CEM)
+m.cem <- matchit( PHN.C1 ~ AGE  + PERSONS  + VOTE96.1 + NEW +  MAJORPTY +  WARD, 
+data = GerberGreenImai, 
+method = "cem")
+
+# генетический мэтчинг 
+m.gen = matchit( PHN.C1 ~ AGE  + PERSONS  + VOTE96.1 + NEW +  MAJORPTY +  WARD,
+                 data = GerberGreenImai,  
+                         method = "genetic",  
+                         data.type.int=TRUE,  
+                         print = 0, pop.size = 100) 
+```
+
+### Проверка: какой мэтчинг подошел лучше
+
+```{r}
+bal.plot(PHN.C1 ~ AGE  + PERSONS  + VOTE96.1 + NEW + MAJORPTY + WARD,  
+        data = GerberGreenImai,  
+        weights = data.frame(PScore = get.w(m.skl), 
+                             Mahal = get.w(m.mln), 
+                             CEM = get.w(m.cem), 
+                             FUL = get.w(m.full),
+                             GEN = get.w(m.gen)),
+        method = c("matching", "matching","matching","matching","matching"),  
+        binary = "std", 
+        disp.v.ratio = TRUE, 
+        disp.ks = TRUE) 
+
+bal.plot(PHN.C1 ~ AGE  + PERSONS  + VOTE96.1 + NEW + MAJORPTY + WARD, "WARD",
+         data = GerberGreenImai,  
+         weights = data.frame(PScore = get.w(m.skl), 
+                             Mahal = get.w(m.mln), 
+                             CEM = get.w(m.cem), 
+                             FUL = get.w(m.full),
+                             GEN = get.w(m.gen)),
+         method = c("matching", "matching","matching","matching","matching"),  
+         binary = "std", 
+         disp.v.ratio = TRUE, 
+         disp.ks = TRUE)+ coord_flip() +labs(, y='')
+
+bal.plot(PHN.C1 ~ AGE  + PERSONS  + VOTE96.1 + NEW + MAJORPTY + WARD, "PERSONS",
+         data = GerberGreenImai,  
+         weights = data.frame(PScore = get.w(m.skl), 
+                             Mahal = get.w(m.mln), 
+                             CEM = get.w(m.cem), 
+                             FUL = get.w(m.full),
+                             GEN = get.w(m.gen)),
+         method = c("matching", "matching","matching","matching","matching"),  
+         binary = "std", 
+         disp.v.ratio = TRUE, 
+         disp.ks = TRUE)+labs(, y='')
+
+bal.plot(PHN.C1 ~ AGE  + PERSONS  + VOTE96.1 + NEW + MAJORPTY + WARD, "VOTE96.1",
+         data = GerberGreenImai,  
+         weights = data.frame(PScore = get.w(m.skl), 
+                             Mahal = get.w(m.mln), 
+                             CEM = get.w(m.cem), 
+                             FUL = get.w(m.full),
+                             GEN = get.w(m.gen)),
+         method = c("matching", "matching","matching","matching","matching"),  
+         binary = "std", 
+         disp.v.ratio = TRUE, 
+         disp.ks = TRUE) +labs(, y='')
+
+bal.plot(PHN.C1 ~ AGE  + PERSONS  + VOTE96.1 + NEW + MAJORPTY + WARD, "NEW",
+         data = GerberGreenImai,  
+         weights = data.frame(PScore = get.w(m.skl), 
+                             Mahal = get.w(m.mln), 
+                             CEM = get.w(m.cem), 
+                             FUL = get.w(m.full),
+                             GEN = get.w(m.gen)),
+         method = c("matching", "matching","matching","matching","matching"),  
+         binary = "std", 
+         disp.v.ratio = TRUE, 
+         disp.ks = TRUE)+labs(, y='')
+
+bal.plot(PHN.C1 ~ AGE  + PERSONS  + VOTE96.1 + NEW + MAJORPTY + WARD, "MAJORPTY",
+         data = GerberGreenImai,  
+         weights = data.frame(PScore = get.w(m.skl), 
+                             Mahal = get.w(m.mln), 
+                             CEM = get.w(m.cem), 
+                             FUL = get.w(m.full),
+                             GEN = get.w(m.gen)),
+         method = c("matching", "matching","matching","matching","matching"),  
+         binary = "std", 
+         disp.v.ratio = TRUE, 
+         disp.ks = TRUE)+labs(, y='')
+```
+```{r message=F, warning=F}
+love.plot(PHN.C1 ~ AGE  + PERSONS  + VOTE96.1 + NEW +  MAJORPTY ,  
+          data = GerberGreenImai,  
+          stats = "ks.statistics", 
+          weights = data.frame(PScore = get.w(m.skl), 
+                             Mahal = get.w(m.mln), 
+                             CEM = get.w(m.cem), 
+                             FUL = get.w(m.full),
+                             GEN = get.w(m.gen)),
+          method = c("matching", "matching", "matching","matching","matching"),
+          line = TRUE, binary = "std",threshold = .1,    
+          #var.names = new.names, 
+          shapes = c("circle", "square", "triangle", "diamond")) +  
+  scale_colour_hue()+ 
+  theme(legend.position = c(.85, .25), 
+        legend.box.background = element_rect(),  
+        legend.box.margin = margin(1, 1, 1, 1))
+
+```
+
+Отдельно мы решили посмотреть на переменную WARD, тк в ней очень много факторов
+```{r message=F, warning=F}
+love.plot(PHN.C1 ~ WARD,  
+          data = GerberGreenImai,  
+          stats = "ks.statistics", 
+          weights = data.frame(PScore = get.w(m.skl), 
+                             Mahal = get.w(m.mln), 
+                             CEM = get.w(m.cem), 
+                             FUL = get.w(m.full),
+                             GEN = get.w(m.gen)),
+          method = c("matching", "matching", "matching","matching","matching"),
+          line = TRUE, binary = "std",threshold = .1,    
+          #var.names = new.names, 
+          shapes = c("circle", "square", "triangle", "diamond")) +  
+  scale_colour_hue()+ 
+  theme(legend.position = c(.85, .25), 
+        legend.box.background = element_rect(),  
+        legend.box.margin = margin(1, 1, 1, 1))
+```
+
+По результам сравнения разных видом мэтчинга видно, что наилучшими являются генетический, по стратам (cem) и чуть в меньшей степени - по Махаланобису (но в пределах допустимого)
+
+## Оценка значимости эффекта
+
+Посмотрим как для отмеченных выше мэтчингов выглядит эффект звонков для явки людей на выборы
+```{r message=F, warning=F}
+model_g = glm(VOTED98 ~ PHN.C1, family = "binomial", match.data(m.gen))
+model_g.full = glm(VOTED98 ~ PHN.C1 + AGE + VOTE96.1 + NEW + PERSONS + MAJORPTY + WARD, family = "binomial", match.data(m.gen))
+
+model_c = glm(VOTED98 ~ PHN.C1, family = "binomial", match.data(m.cem))
+model_c.full = glm(VOTED98 ~ PHN.C1 + AGE  + VOTE96.1 + NEW + PERSONS + MAJORPTY + WARD, family = "binomial", match.data(m.cem))
+
+model_m = glm(VOTED98 ~ PHN.C1, family = "binomial", match.data(m.mln))
+model_m.full = glm(VOTED98 ~ PHN.C1 + AGE  + VOTE96.1 + NEW + PERSONS + MAJORPTY + WARD, family = "binomial", match.data(m.mln))
+
+
+tab_model(model_g, model_g.full,  model_c, model_c.full, model_m, model_m.full,  collapse.ci = TRUE, terms = c("PHN.C1","AGE", "NEW","PERSONS", "VOTE96.1", "MAJORPTY"),  
+          dv.labels = c("Genetic", "Genetic full", "CEM", "CEM full", "Mahalanobis", "Mahalanobis full"))
+
+```
+
+Мы не стали включать в таблицу переменную WARD, так как в ней очень много факторов, однако для нас не столь важны, главное, что здесь хотели посмотреть - это есть ли эффект для переменной звонки (PHN.C1). WARD тажке была включена как переменная в модель, что видно в коде.
+
+Видно, что без контроля по другим пременным (ковариатам) регрессия не показывает значимого эффекта звонков для явки на выборы. Это соответствует тому что, утверждает Имаи, критикуя Гербера и Грина (Gerber, Green, 2000). 
+При добавлении ковариат в генетическом меэтчинге и мэтчинге по Махаланобису, также нет эффекта.
+Однако, при добавлении ковариат, в  мэтчинге с подбором по стратам эффект все же есть, и он положительный. Но дисперсия достаточно большая (1.02 – 2.21), также p-value находится близко к пороговому значению в 0.05, что говорит о том, что возможно эффекта все же нет. Во всяком случае мы не можем говорить о нем столь уверено. На это возможно повляло то, что в подборе по стратам временно огрубляет данные в соответствии с идеями исследователей, а затем находит точные совпадения либо то, что формируется больше наблюдений.
+
+Таким образом мы склонны согласиться с Имаи, что эффекта нет: телефонные звонки не приводят к увеличению или уменьшению явки избирателей на выборы.
+
+
+
+
+## Плацебо-тесты
+
+Цель плацебо-тестов - посмотреть, есть ли эффект там, где его быть не должно. Если ли эффект есть, значит скорее всего присутсвует ненаблюдаемая переменная, которую я не могу контрлировать (ее нет в данных). Тест позволяет выявить, есть ли у предложенного мэтчинга проблемы
+
+Тк лучше всего эффект дал генетический мэтчинг, плацебо тесты мы решили делать на нем
+
+Плацебо-тесты желательно делать много раз для того чтобы рассмотреть множество возможных вариантов 
+
+
+### Замена Y (VOTE98) на голосование в 1996 (VOTE96.1)
+
+```{r message=F, warning=F}
+m.genV= matchit(PHN.C1 ~ AGE  +  NEW + MAJORPTY + WARD + PERSONS, data = GerberGreenImai,  
+                   method = "genetic",  
+                   data.type.int=TRUE,  
+                   print = 0, pop.size = 100) 
+
+love.plot(PHN.C1 ~ AGE + PERSONS + NEW + MAJORPTY + WARD, data = GerberGreenImai, abs = T, 
+          weights = list(Genetic = get.w(m.genV)), 
+          method = rep("matching"),  
+          line = FALSE,      
+          binary = "std",      
+          threshold = 0.1,    
+          var.names = new.names, 
+          shapes = c("circle", "square", "diamond")) + 
+  scale_colour_hue()
+  
+model_v96 <- glm(VOTE96.1 ~ PHN.C1, family = "binomial", match.data(m.genV)) 
+model_v96.full <- glm(VOTE96.1 ~ PHN.C1 + AGE  + NEW + PERSONS + MAJORPTY + WARD, family = "binomial", match.data(m.genV)) 
+tab_model(model_v96, model_v96.full, collapse.ci = TRUE, terms = c("PHN.C1", "AGE", "NEW", "PERSONS", "MAJORPTY"))
+```
+
+Тест показал, что эффекта между зависимой и воздействующей переменной нет.
+
+
+### Замена Y (VOTE98) на (PERSONS)
+
+```{r message=F, warning=F}
+# Генетический мэтчинг 
+m.genP= matchit(PHN.C1 ~ AGE  +  NEW + MAJORPTY + WARD + VOTE96.1, data = GerberGreenImai,  
+                         method = "genetic",  
+                         data.type.int=TRUE,  
+                         print = 0, pop.size = 100) 
+
+love.plot(PHN.C1 ~ AGE + VOTE96.1 + NEW + MAJORPTY + WARD, data = GerberGreenImai, abs = T, 
+          weights = list(Genetic = get.w(m.genP)),
+          method = rep("matching"),  
+          line = FALSE,      
+          binary = "std",      
+          threshold = 0.1,    
+          var.names = new.names, 
+          shapes = c("circle", "square", "diamond")) + 
+  scale_colour_hue()
+ 
+# Оцениваем эффект с помощью логистической регрессии 
+model_persons <- glm(as.factor(PERSONS) ~ PHN.C1, family = "binomial", match.data(m.genP)) 
+
+model_persons.full <- glm(as.factor(PERSONS) ~ PHN.C1 + AGE  + NEW + VOTE96.1+ MAJORPTY + WARD, family = "binomial", match.data(m.genP)) 
+tab_model(model_persons, model_persons.full, collapse.ci = TRUE, terms = c("PHN.C1","AGE", "NEW", "VOTE96.1", "MAJORPTY"))
+```
+
+###Замена Y (VOTE98) на (MAJORPTY)
+
+```{r message=F, warning=F}
+m.genM= matchit(PHN.C1 ~ AGE  +  NEW + PERSONS + WARD + VOTE96.1, data = GerberGreenImai,  
+                         method = "genetic",  
+                         data.type.int=TRUE,  
+                         print = 0, pop.size = 100) 
+
+love.plot(PHN.C1 ~ AGE + VOTE96.1 + NEW + PERSONS + WARD, data = GerberGreenImai, abs = T, 
+          weights = list(Genetic = get.w(m.genM)),
+          method = rep("matching"),  
+          line = FALSE,      
+          binary = "std",      
+          threshold = 0.1,    
+          var.names = new.names, 
+          shapes = c("circle", "square", "diamond")) + 
+  scale_colour_hue()
+ 
+# Оцениваем эффект с помощью логистической регрессии 
+model_MAJORPTY  <- glm(as.factor(MAJORPTY) ~ PHN.C1, family = "binomial", match.data(m.genM)) 
+model_MAJORPTY.full <- glm(as.factor(MAJORPTY) ~ PHN.C1 + AGE + PERSONS + NEW + VOTE96.1 +PERSONS+ WARD, family = "binomial", match.data(m.genM)) 
+tab_model(model_persons,model_persons.full, collapse.ci = TRUE, terms = c("PHN.C1","AGE", "PERSONS", "NEW", "VOTE96.1"))
+```
+
+###Замена Y (VOTE98) на (NEW)
+
+```{r message=F, warning=F}
+m.genN= matchit(PHN.C1 ~ AGE  + MAJORPTY + PERSONS + WARD + VOTE96.1, data = GerberGreenImai,
+                         method = "genetic",  
+                         data.type.int=TRUE,  
+                         print = 0, pop.size = 100) 
+
+love.plot(PHN.C1 ~ AGE + VOTE96.1 + MAJORPTY + PERSONS + WARD, data = GerberGreenImai, abs = T,
+          weights = list(Genetic = get.w(m.genN)),
+          method = rep("matching"),  
+          line = FALSE,      
+          binary = "std",      
+          threshold = 0.1,    
+          var.names = new.names, 
+          shapes = c("circle", "square", "diamond")) + 
+  scale_colour_hue()
+ 
+# Оцениваем эффект с помощью логистической регрессии 
+model_NEW  <- glm(NEW ~ PHN.C1, family = "binomial", match.data(m.genN)) 
+model_NEW.full <- glm(NEW ~ PHN.C1 + AGE + PERSONS + MAJORPTY + VOTE96.1 + WARD, family = "binomial", match.data(m.genN)) 
+tab_model(model_persons,model_persons.full, collapse.ci = TRUE, 
+          terms = c("PHN.C1", "AGE", "PERSONS", "MAJORPTY", "VOTE96.1" ))
+```
+
+Последующий тесты также не выявили эффекта, что говорит в пользу проведенного мэтчинга.
+Для более точной проверки мы также проведем еще анализ чувствительности.
+
+## Анализ чувствительности
+
+Предварительно для анализа чувствительности необходимо заново смэтчить данные с помощью библиотеки Matching
+```{r message=F, warning=F}
+
+gen.match <- GenMatch(Tr=Tr, X=X,  
+                      pop.size=100, 
+                      # задаёт нецелочисленные веса 
+                      data.type.int=FALSE,  
+                      # Не выводить отчёт в консоль 
+                      print=0,  
+                      # анализ чувствительности предполагает, что мэтчинг 
+                      # производится без замещения 
+                      replace = FALSE) 
+
+gen.out <- Match(Y=Y, Tr=Tr, X=X,  
+                 Weight.matrix=gen.match, 
+                 replace = FALSE)
+
+love.plot(PHN.C1 ~ AGE  + PERSONS  + VOTE96.1 + NEW +  MAJORPTY +  
+            WARD, 
+          data = GerberGreenImai, abs = T,
+          weights = get.w(gen.out),
+          method = c("matching"), 
+          line = FALSE,     
+          binary = "std",     
+          threshold = 0.1,   
+          var.names = new.names,
+          shapes = c("circle", "square")) + 
+  scale_colour_hue() 
+```
+
+
+
+```{r}
+# Тест на чувствительность 
+psens(gen.out,
+      # Upper-bound on Gamma
+      Gamma=1.5,
+      # increment in Gamma
+      GammaInc=.1, )
+```
+
+Разброс величин показывает, что при гамма 1.2 мы уже не можем отвергнуть нулевую гипотезу об
+отсутствии эффекта воздействия, т.е результаты перестают быть значимыми при наличии
+ненаблюдаемой переменной, которая повышает шансы попадания в экспериментальную группу всего лишь на 20%.
+
+Это говорит, что эффект не очень надежен, но на данном этапе нет ненаблюдаемых конфаундеров
+
+
+
+
